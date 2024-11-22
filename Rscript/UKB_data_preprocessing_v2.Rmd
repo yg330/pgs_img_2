@@ -1,6 +1,11 @@
 # library
 ```{r setup}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+	message = FALSE,
+	warning = FALSE,
+	include = FALSE
+)
+
 # For code reproducibility: and git
 library(here) # project-based relative path finding 
 library(usethis) # git set-up
@@ -12,4 +17,525 @@ library(data.table, include.only = "fread")
 # For specific parts of the code
 library(Hmisc, include.only = "hist.data.frame") # For quick visualisation of distribution
 library(qqman) # For Manhattan plot
+```
+
+# Image Data preprocessing
+
+## global MRI phenotypes
+## regional MRI phenotypes
+
+```{r Regional Phenotype Data read-in}
+# Regional MRI phenotype data
+file.loc = list.files(here("imaging_data"), pattern="HCP.*\\.csv", full.names=TRUE)
+file.name = gsub(here("imaging_data/HCP.fsaverage.aparc_|dti_|NODDI_|.csv"), "", file.loc) # remove anything fit the patterns
+
+for (i in 1:length(file.loc)) { # for loop to read in all MRI phenotypes
+  tmp_file = fread(file.loc[i])
+  assign(file.name[i], tmp_file)
+}
+```
+
+```{r Find unique participant ID list}
+# Find unique id number for participants with any MRI phenotype data
+MRI.id.list = list(CT$Subject, FA$Subject, FI$Subject, GC$Subject, GMV$Subject, IC$Subject, ICVF$Subject, ISOVF$Subject, MC$Subject, MD$Subject, OD$Subject, SA$Subject)
+keep.id = flatten(MRI.id.list)
+keep.id = unique(keep.id)
+
+keep.id = t(t(keep.id)) # change list to matrix, then a single row to a single column
+colnames(keep.id) = "eid"
+write.csv(keep.id, file = here("genetic_data/keep.id.UKB.txt"))
+
+# Alternatively: If you want to find shared common ID that have data across all MRI phenotype
+# keep.id = Reduce(intersect, list(CT$Subject, FA$Subject, FI$Subject, GC$Subject, GMV$Subject, IC$Subject, ICVF$Subject, ISOVF$Subject, MC$Subject, MD$Subject, OD$Subject, SA$Subject))
+
+```
+
+```{r Create Data required for GWAS: Global Phenotypes from Regional Phenotypes and outlier removal, eval=FALSE, include=FALSE}
+# Global Phenotype Table
+# left hemisphere and right hemisphere average
+for (i in file.name){ # file.name
+  tmp_file = get(i)
+  # average by hemisphere and globally to create global phenotype
+  tmp_file$lh_avg = rowMeans(select(tmp_file, contains("lh_"), -contains("???")))
+  tmp_file$rh_avg = rowMeans(select(tmp_file, contains("rh_"), -contains("???")))
+  tmp_file$global_avg = (tmp_file$lh_avg + tmp_file$rh_avg)/2
+  
+  # global phenotype standardisation
+  tmp_file$lh_avg_scaled = scale(tmp_file$lh_avg)
+  tmp_file$rh_avg_scaled = scale(tmp_file$rh_avg)
+  tmp_file$global_avg_scaled = scale(tmp_file$global_avg)
+  
+  #rename for later merging
+  colnames(tmp_file) = paste(colnames(tmp_file), i, sep=".")
+  colnames(tmp_file)[1] <- "Subject"
+  
+  #assign to new data frame variable
+  assign(paste0(i,".avg"), select(tmp_file, Subject, contains("avg")))
+}
+
+global.pheno = mget(paste0(file.name, ".avg")) %>% reduce(full_join, by = "Subject") # merge all data frames into one master table
+write.csv(global.pheno, file=here("result_table/global.pheno.avg.scaled.txt"))
+
+# Remove mean outliers and only leave scaled global phenotype in
+global.pheno.QCed = select(global.pheno, Subject, contains("scaled"))
+global.pheno.QCed = global.pheno.QCed %>% mutate(across(c(2:37), ~ ifelse(. > 5 | . < -5, NA, .)))
+write.csv(global.pheno.QCed, file=here("result_table/global.pheno.QCed.txt"))
+
+# Remove median outliers
+global.pheno.QCed = fread(here("result_table/global.pheno.QCed.txt"), drop = "V1") %>% select("Subject", contains("global"))
+global.pheno.QCed.mad = global.pheno.QCed
+list.outlier.log = list()
+
+for (i in 2:ncol(global.pheno.QCed.mad)){
+  col_name = colnames(global.pheno.QCed.mad)[i]
+  col_mad = mad(global.pheno.QCed.mad[[col_name]], na.rm = TRUE) # find MAD value
+  col_mad_outlier_n = sum(abs(global.pheno.QCed.mad[[col_name]]) > col_mad * 5, na.rm = TRUE) # find number of people with more than +-5MAD value
+  
+  if (col_mad_outlier_n != 0) {
+      outlier_row_n = which(abs(global.pheno.QCed.mad[[col_name]]) > col_mad * 5) # find which row had > +-5 MAD value
+      global.pheno.QCed.mad[[col_name]][abs(global.pheno.QCed.mad[[col_name]]) > 5 * col_mad] <- NA # Remove outlier
+      
+      # print out output_message and save log in list for further later processing
+      output_message = sprintf("Detected %d outliers in column '%s'. Removing rows: %s", 
+                               col_mad_outlier_n, col_name, paste(outlier_row_n, collapse = ", "))
+      print(output_message)
+      list.outlier.log = append(list.outlier.log, output_message) # grab the output message to later process to determine what to do with mad outliers
+  } else {
+    print(paste0("No outlier detected at ", col_name, ". Moving on..."))
+  }
+}
+
+write.table(global.pheno.QCed.mad, file=here("result_table/global.pheno.QCed.mad.txt"))
+
+# Generate histogram in pdf for double-checking
+
+for (i in 1) { # use loop so multi-page pdf can be generated
+  tmp_plot_path = paste0("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/GWAS_Trait/hist_plots/global.phenotypes.pdf")
+  tmp_plot.mad_path = paste0("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/GWAS_Trait/hist_plots/global.phenotypes.mad.pdf")
+
+  pdf(file = tmp_plot_path)
+    hist(global.pheno.QCed)
+  dev.off()
+    
+  pdf(file = tmp_plot.mad_path)
+    hist(global.pheno.QCed.mad)
+  dev.off()
+}
+
+```
+
+```{r Regional Phenotype Data Standardisation and Outlier Removal}
+# List region names that will need to generate average regional values
+region.names = grep("ROI", colnames(tmp_file), value = TRUE)
+region.names = unique(gsub("lh_L_|rh_R_|_ROI", "", region.names))
+
+for (i in 1:length(file.name)){
+  tmp_file = get(file.name[i])
+  tmp_file = tmp_file %>% select(-contains("???")) # remove medial wall columns if it exists.
+
+  # Calculate average regional result and standardise it
+  for (k in 1:length(region.names)){
+    # Set names
+    tmp_region_name = region.names[k]
+    tmp_column_name = paste0("_", tmp_region_name, "_ROI")
+    
+    tmp_region_table = tmp_file %>% select("Subject", contains(tmp_column_name)) # to prevent accidentally selecting partially fit columns
+    
+    # Calculate average
+    tmp_column_name_avg = paste0(tmp_region_name, "_avg")
+    tmp_region_table[ , tmp_column_name_avg] = rowMeans(select(tmp_region_table, contains(tmp_column_name)))
+    
+    # Standardisation
+    tmp_column_name_scl = paste0(tmp_region_name, "_avg_scaled")
+    tmp_region_table[ , tmp_column_name_scl] = scale(select(tmp_region_table, contains("_avg")))
+    
+    tmp_file = full_join(tmp_file, tmp_region_table) # use warning message to make sure avg phenotypes are generated by correct columns
+  }
+  
+  # Remove mean outliers
+  tmp_file_QC = select(tmp_file, Subject, contains("avg_scaled"))
+  tmp_file_QC = tmp_file_QC %>% mutate(across(c(2:181), ~ ifelse(. > 5 | . < -5, NA, .)))
+  
+  tmp_file_QC.loc = paste0("imaging_data/regional_", file.name[i], ".avg_scaled_QCed.txt")
+  write.csv(tmp_file_QC, file = here(tmp_file_QC.loc), row.names = FALSE)
+}
+
+
+
+# Median-outlier removal
+file.loc = list.files(here("imaging_data"), pattern="avg_scaled_QCed.txt", full.names=TRUE)
+file.name = gsub(here("imaging_data/|.avg_scaled_QCed.txt"), "", file.loc) # remove anything fit the patterns
+list.no_outlier = list() # List to find all phenotype with no outliers
+list.more_than_50 = list() # List to preliminary screen regions with many outliers
+list.outlier.log = list() # full details on which phenotype and where the mad outliers are coming from
+
+# for loop to read in all QCed MRI phenotypes
+for (i in 1:length(file.loc)) { 
+  tmp_file = fread(file.loc[i])
+  assign(file.name[i], tmp_file)
+}
+
+for (a in seq_along(file.name)){
+  # read in table
+  tmp_reg = get(file.name[a])
+  
+  # loop through columns to detect and remove median outlier
+  for (i in 2:ncol(tmp_reg)){
+    col_name = colnames(tmp_reg)[i]
+    col_mad = mad(tmp_reg[[col_name]], na.rm = TRUE) # find MAD value
+    col_mad_outlier_n = sum(abs(tmp_reg[[col_name]]) > col_mad * 5, na.rm = TRUE) # find number of people with more than +-5MAD value
+    
+    if (col_mad_outlier_n != 0) {
+      outlier_row_n = which(abs(tmp_reg[[col_name]]) > col_mad * 5) # find which row had > +-5 MAD value
+      tmp_reg[[col_name]][abs(tmp_reg[[col_name]]) > 5 * col_mad] <- NA # Remove outlier
+      
+      # print out output_message and save log in list for further later processing
+      output_message = sprintf("For phenotype '%s', detected %d outliers in column '%s'. Removing rows: %s",
+                    file.name[a], col_mad_outlier_n, colnames(tmp_reg)[i], paste(outlier_row_n, collapse = ", "))
+      print(output_message)
+      list.outlier.log = append(list.outlier.log, output_message) # grab the output message to later process to determine what to do with mad outliers
+      if (col_mad_outlier_n > 50) {
+        pheno_col_name = paste(file.name[a],col_name, sep = "_")
+        list.more_than_50 = append(list.more_than_50, pheno_col_name)
+      }
+    } else {
+      pheno_col_name = paste(file.name[a],col_name, sep = "_")
+      list.no_outlier = append(list.no_outlier, pheno_col_name)
+      print(paste0("For phenotype ", file.name[a], ", no outlier detected at ", colnames(tmp_reg)[i], ". Moving on..."))
+    }
+  }
+  file.name.new = paste0(file.name, ".mad")
+  assign(file.name.new[a], tmp_reg)
+}
+
+# Generate histogram in pdf for double-checking
+for(i in 1:length(file.name)){
+  tmp_region = get(file.name[i])
+  tmp_region.mad = get(file.name.new[i])
+  
+  tmp_plot_path = paste0("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/GWAS_Trait/hist_plots/", file.name[i], ".pdf")
+  tmp_plot.mad_path = paste0("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/GWAS_Trait/hist_plots/", file.name[i], ".mad.pdf")
+
+  pdf(file = tmp_plot_path)
+    title = file.name[i]
+    hist(tmp_region)
+  dev.off()
+  
+  pdf(file = tmp_plot.mad_path)
+    title = file.name.new[i]
+    hist(tmp_region.mad)
+  dev.off()
+}
+
+# Generate table of outliers based on output message
+
+outlier_stat <- data.frame(
+  phenotype = str_extract(list.outlier.log, "(?<=phenotype ')[^']+"),
+  outliers = as.numeric(str_extract(list.outlier.log, "(?<=detected )\\d+")),
+  column = str_extract(list.outlier.log, "(?<=column ')[^']+"), # Extract the text after "column"
+  rows = str_extract(list.outlier.log, "(?<=rows: ).*"),
+  stringsAsFactors = FALSE
+)
+write.csv(outlier_stat, file = here("imaging_data/regional_MAD_stat.txt")) # save data generated for easy retrival later
+
+```
+
+```{r Regional Outlier stat, fig.width=12, fig.height=6}
+# Read-in table
+outlier_stat = fread(here("imaging_data/regional_MAD_stat.txt"), drop = "V1")
+outlier_stat$region = gsub("_avg_scaled", "", outlier_stat$column)
+
+# Question 1: Which phenotypes have the most MAD outliers?
+
+ggplot(outlier_stat, aes(x = phenotype)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Phenotype Count Distribution", x = "Phenotype", y = "Count")
+
+# Question 2: What outlier n distribution is like?
+
+ggplot(outlier_stat, aes(x = outliers)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Phenotype Count Distribution", x = "outliers", y = "Count") +
+  xlim(0,1000)# 21 phenotype regions > 1,000 outliers; 6 phenotypes > 30,000
+
+# Question 3: Outlier distribution on different thresholds
+outlier_more_than_50 = outlier_stat %>% filter(outliers>50)
+outlier_more_than_100 = outlier_stat %>% filter(outliers>100)
+outlier_more_than_300 = outlier_stat %>% filter(outliers>300)
+outlier_more_than_500 = outlier_stat %>% filter(outliers>500)
+
+ggplot(outlier_more_than_50, aes(x = phenotype)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Phenotype Count Distribution", x = "Phenotype", y = "Count")
+
+ggplot(outlier_more_than_100, aes(x = phenotype)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Phenotype Count Distribution", x = "Phenotype", y = "Count")
+
+ggplot(outlier_more_than_300, aes(x = phenotype)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Phenotype Count Distribution", x = "Phenotype", y = "Count")
+
+ggplot(outlier_more_than_500, aes(x = phenotype)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Phenotype Count Distribution", x = "Phenotype", y = "Count")
+
+# Question 4: Is there any regions that repeatedly have > 100 MAD outliers?
+outlier_more_than_100 %>%
+  count(region) %>%
+  filter(n >= 2) %>%
+  ggplot(aes(x = region, y = n)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Phenotype Count Distribution", x = "Phenotype", y = "Count")
+
+outlier_more_than_100 %>%
+  count(region) %>%
+  filter(n >= 3) %>%
+  ggplot(aes(x = region, y = n)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Phenotype Count Distribution", x = "Phenotype", y = "Count")
+
+# (OPTIONAL) Question 5: Is any subject repeatedly appear as MAD outliers?
+
+```
+
+```{r Quality Control for Participant ID, eval=FALSE, include=FALSE}
+# Participants QC
+  # Select Self-identified white Europeans {keep 21000-0.0 %in% 1, 1001, 1002, 1003}
+  # Remove Excessive heterozygosity {keep 22027-0.0 == NA}
+  # Find Reported Sex and Genetic Sex Mismatch {keep 31-0.0 == 22001-0.0, ignore sex in NA if genetic sex is present} : Expected mistmatch number ~300 cases
+  # Remove gPCA outliers using PCA1 and PCA2 to ensure genetically homozygous white European population {keep "22009-0.1" within its mean+-5SD and "22009-0.2" within its mean+-5SD}
+
+# Pull relative fields from UKB latest data freeze
+field_QC = c("eid", "21000-0.0", "31-0.0", "22001-0.0", "22027-0.0", "22009-0.1", "22009-0.2") 
+QC = fread("/rds/user/yg330/rds-rb643-ukbiobank2/Data_Phenotype/DataFetch_20022024/ukb677594.csv",select = field_QC, header = T,sep=",")
+
+QC_white = QC %>% filter(`21000-0.0` %in% c(1, 1001, 1002, 1003)) # Self-identified white Europeans
+QC_white_low.hetero = filter(QC_white, is.na(QC_white$`22027-0.0`)) # Excessive heterozygousity (Expected 900 cases)
+
+
+QC_white_low.hetero_with.mis.sex = filter(QC_white_low.hetero, QC_white_low.hetero$`31-0.0` != QC_white_low.hetero$`22001-0.0`) # find rows with mismatch (Expected ~300 cases)
+QC_white_low.hetero_with.cor.sex = filter(QC_white_low.hetero, !QC_white_low.hetero$eid %in% QC_white_low.hetero_with.mis.sex$eid) # remove the rows with mismatch sex
+
+# Remove gPCA outliers to ensure population is genetically homozygous
+PC1_mean = mean(na.omit(QC_white_low.hetero_with.cor.sex$`22009-0.1`))
+PC1_sd = sd(na.omit(QC_white_low.hetero_with.cor.sex$`22009-0.1`))
+PC1_up.range = PC1_mean + 5*PC1_sd
+PC1_low.range = PC1_mean - 5*PC1_sd
+
+PC2_mean = mean(na.omit(QC_white_low.hetero_with.cor.sex$`22009-0.2`))
+PC2_sd = sd(na.omit(QC_white_low.hetero_with.cor.sex$`22009-0.2`))
+PC2_up.range = PC2_mean + 5*PC2_sd
+PC2_low.range = PC2_mean - 5*PC2_sd
+
+QC_white_low.hetero_with.cor.sex.homozygous = QC_white_low.hetero_with.cor.sex %>% filter(between(`22009-0.1`, PC1_low.range, PC1_up.range) & between(`22009-0.2`, PC2_low.range, PC2_up.range)) 
+# Keep only rows within range in both PC1 and PC2
+
+write.csv(QC_white_low.hetero_with.cor.sex.homozygous, file= here("result_table/UKB_ID.QCed.txt"), row.names = FALSE)
+
+# Use UKB QCed population to filter out participants in the imaging
+keep.id = fread(here("genetic_data/keep.id.UKB.txt"), drop = "V1", header = TRUE) # data read-in
+keep.id =  gsub("UKB", "", keep.id$eid) # grab UKB ID
+
+keep.id.QCed = filter(QC_white_low.hetero_with.cor.sex.homozygous, QC_white_low.hetero_with.cor.sex.homozygous$eid %in% keep.id) # select UKB ID where it is in the UKB QCed list
+keep.id.QCed = select(keep.id.QCed, eid, `22001-0.0`) # select eid and sex
+keep.id.QCed = rename(keep.id.QCed, "gSEX" = `22001-0.0`) # rename for better recognition
+write.csv(keep.id.QCed, file = here("genetic_data/keep.id.UKB.QCed.txt"), row.names = FALSE)
+
+# TODO: Check the following with Varun
+# 14525	22003-0.0	487980	Continuous	Heterozygosity
+# 14526	22004-0.0	487980	Continuous	Heterozygosity, PCA corrected
+# 14527	22005-0.0	487980	Continuous	Missingness
+
+# Use PCA corrected heterozygosity instead please
+```
+
+## white matter tract: FINALISED
+```{r White matter tract phenotype data standardisation and outlier removal, eval=FALSE, include=FALSE}
+# STEP1: Find file paths and names
+tract_path = list.files("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/raw data/tracts", full.names = TRUE)
+tract_name = gsub("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/raw data/tracts/|dti_|NODDI_|.csv", "", tract_path) # remove anything fit the patterns
+tract_name = paste0("tract_", tract_name) # add distinction for names
+outlier_stat <- data.frame(tract = character(), region = character(), outlier_Count = integer(), outlier_Rows = character())
+
+# STEP 2: Remove outliers with values beyond 5 standard deviation (SD) 5 and median absolute deviation (MAD)
+for (i in seq_along(tract_path)) {
+  # Read and process tract data
+  tmp_tract <- read.csv(tract_path[i])
+  tmp_tract_name <- tract_name[i]
+  
+  # format for GWAS
+  tmp_tract$Subject = as.numeric(gsub("UKB", "", tmp_tract$Subject))
+  tmp_tract = tmp_tract %>% rename(FID = Subject) %>% mutate(IID = FID) %>% relocate(FID, IID) # rename Subject to FID -> duplicate FID as IID -> move to correct order.
+  
+  # Z-score standardisation on numerical columns
+  tmp_tract[, 3:ncol(tmp_tract)] <- scale(tmp_tract[, 3:ncol(tmp_tract)])
+  
+  # Remove z-score outliers (beyond ±5 SD)
+  tmp_tract <- tmp_tract %>% mutate(across(3:ncol(.), ~ ifelse(. > 5 | . < -5, NA, .)))
+  
+  # save standardised tract table
+  assign(tmp_tract_name, tmp_tract)
+  
+  # Process Median Absolute Deviation (MAD) outliers
+  for (j in 3:ncol(tmp_tract)) {
+    # find MAD
+    col_name <- colnames(tmp_tract)[j]
+    col_mad <- mad(tmp_tract[[col_name]], na.rm = TRUE)
+    
+    # Find MAD outlier number and location
+    mad_outlier <- abs(tmp_tract[[col_name]]) > col_mad * 5
+    col_mad_outlier_n <- sum(mad_outlier, na.rm = TRUE)
+    outlier_rows <- which(mad_outlier)
+    
+    if (col_mad_outlier_n > 0) {
+      print(sprintf(
+        "In %s: %d MAD outliers detected in %s", 
+        tmp_tract_name, 
+        col_mad_outlier_n, 
+        col_name
+      ))
+      # remove MAD outliers
+      tmp_tract[[col_name]][mad_outlier] <- NA
+      
+      # Append to the outlier_stat for later visualisation
+      outlier_stat <- rbind(
+        outlier_stat,
+        data.frame(
+          tract = tmp_tract_name,
+          region = col_name,
+          outlier_Count = col_mad_outlier_n,
+          outlier_Rows = paste(outlier_rows, collapse = ",")
+        )
+      )
+    } else {
+      print(sprintf(
+        "In %s: No MAD outliers in %s", 
+        tmp_tract_name, 
+        col_name
+      ))
+      # Append to the outlier_stat for later visualisation
+      outlier_stat <- rbind(
+        outlier_stat,
+        data.frame(
+          tract = tmp_tract_name,
+          region = col_name,
+          outlier_Count = col_mad_outlier_n,
+          outlier_Rows = paste(outlier_rows, collapse = ",")
+        )
+      )
+    }
+  }
+  
+  # Assign processed tract data
+  tract_name_mad <- paste0(tract_name[i], ".mad")
+  assign(tract_name_mad, tmp_tract)
+}
+
+
+
+# STEP4: Generate results
+write.table(outlier_stat, file = paste0(here("result_supplement/mad_hist_stat/"), "white_matter_tract.mad_outliers.txt"), row.names = FALSE, col.names = TRUE, quote = FALSE) # white matter tract outlier stat
+
+for (i in seq_along(tract_name)){
+  # set results path
+  sd.result_path = paste0(here("result_supplement/imaging_data_final/"), tract_name[i], ".sd.QCed.txt")
+  sd.mad.result_path = paste0(here("result_supplement/imaging_data_final/"), tract_name[i], ".sd.mad.QCed.txt")
+  sd.hist_path = paste0(here("result_supplement/mad_hist_stat/"), tract_name[i], ".sd.pdf")
+  sd.mad.hist_path = paste0(here("result_supplement/mad_hist_stat/"), tract_name[i], ".sd.mad.pdf")
+  
+  # get and write respective table
+  sd.result = get(tract_name[i])
+  sd.mad.result = get(paste0(tract_name[i], ".mad"))
+  
+  write.table(sd.result, file = sd.result_path, row.names = FALSE, col.names = TRUE, quote = FALSE)
+  write.table(sd.mad.result, file = sd.mad.result_path, row.names = FALSE, col.names = TRUE, quote = FALSE)
+  
+  # generate respective histogram
+  pdf(file = sd.hist_path)
+    hist(sd.result)
+  dev.off()
+  
+  pdf(file = sd.mad.hist_path)
+    hist(sd.mad.result)
+  dev.off()
+}
+
+```
+
+## subcortical volume
+```{r Subcortical phenotype data standardisation and outlier removal}
+# Select subcortical regions from Amir's dataset
+# These data have already gone through standardisation and mean+-5SD outlier removal.
+# For details of how the data is generated and cleaned, please check Amir's Jupyter notebook file named "Cleaning.ipynb" in the imaging data folder.
+# !! Subcortical phenotype data right now only includes volume !!
+
+raw_data_sub = read.csv(here("imaging_data/All_IDP_subcortical_Amir.csv"))
+
+raw_data_sub_selected = raw_data_sub %>% select("IID", "Lateral.Ventricle", "Inf.Lat.Vent", "Cerebellum.White.Matter", "Cerebellum.Cortex", "Thalamus.Proper", "Caudate", "Putamen", "Pallidum", "Hippocampus", "Amygdala", "Accumbens.area", "VentralDC", "vessel", "choroid.plexus", "X3rd.Ventricle", "X4th.Ventricle", "Brain.Stem", "CSF", "WM.hypointensities", "Optic.Chiasm", "CC_Posterior", "CC_Mid_Posterior", "CC_Central", "CC_Mid_Anterior", "CC_Anterior", "SubCortGrayVol")
+raw_data_sub_selected$FID = raw_data_sub_selected$IID
+
+write.table(raw_data_sub_selected, file = here("imaging_data/All_IDP_Amir_subcortical.only.txt"), row.names = F, col.names = T, quote = F)
+
+# format to GWAS-ready format
+subcor = fread(here("imaging_data/All_IDP_Amir_subcortical.only.txt"))
+subcor.formatted = subcor %>% relocate("FID", "IID")
+write.table(subcor.formatted, file = here("imaging_data/subcortical_formatted.txt"), row.names = F, col.names = T, quote = F)
+
+# median-outlier removal
+subcor.formatted.mad = fread(here("imaging_data/subcortical_formatted.txt"))
+list.no_outlier = list() # List to find all phenotype with no outliers
+
+
+for (i in 3:ncol(subcor.formatted.mad)) { # FID and IID are the first two columns
+  col_name = colnames(subcor.formatted.mad)[i]
+  col_mad = mad(subcor.formatted.mad[[col_name]], na.rm = TRUE)
+  col_mad_outlier_n = sum(abs(subcor.formatted.mad[[col_name]]) > col_mad * 5, na.rm = TRUE)
+  
+  if (col_mad_outlier_n != 0) {
+    outlier_row_n = which(abs(subcor.formatted.mad[[col_name]]) > col_mad * 5)
+    subcor.formatted.mad[[col_name]][abs(subcor.formatted.mad[[col_name]]) > 5 * col_mad] <- NA # In column col_name, if |value| > 5*column mad SD, then |value| is outlier
+    print(paste0("The detected outlier number is ", col_mad_outlier_n, 
+                 ". At column ", col_name, 
+                 ", now removing the following rows ", 
+                 paste(outlier_row_n, collapse = ", ")))
+  } else {
+    print(paste0("No outlier detected at ", col_name, ". Moving on..."))
+    list.no_outlier = append(list.no_outlier, col_name)
+  }
+}
+
+# phenotype > 50 mad outliers:  Lateral.Ventricle(230); Inf.Lat.Vent(610); vessel(642); X4th.Ventricle(57); WM.hypointensities(3010); CC_Central(229); CC_Mid_Anterior(108)
+
+
+print(paste0("Phenotypes that had no outliers are ", paste(list.no_outlier, collapse = ", "))) # report no outlier phenotypes
+write.table(subcor.formatted.mad, file = here("imaging_data/subcortical_formatted.mad.txt"), row.names = F, col.names = T, quote = F)
+
+
+# Generate histogram in pdf for double-checking
+subcor.formatted = fread(here("imaging_data/subcortical_formatted.txt")) # non-median outlier corrected table
+
+subcor_plot_path = paste0("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/GWAS_Trait/hist_plots/subcor.pdf")
+subcor_plot.mad_path = paste0("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/GWAS_Trait/hist_plots/subcor.mad.pdf")
+
+for (i in 1) { # unclear but when put into a loop the margin problem was fixed.
+  pdf(file = subcor_plot_path)
+    title = "subcor"
+    hist(subcor.formatted)
+  dev.off()
+  
+    pdf(file = subcor_plot.mad_path)
+    title = "subcor.mad"
+    hist(subcor.formatted.mad)
+  dev.off()
+}
+
 ```

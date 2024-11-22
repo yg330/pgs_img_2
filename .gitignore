@@ -8,6 +8,7 @@
 # project-wide ignore
 genetic_data/
 imaging_data/
+result_supplement/imaging_data_final/
 result_table/
 script/
 __MACOSX/
