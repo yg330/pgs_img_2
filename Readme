@@ -1,0 +1,7 @@
+Arthour: Yuanjun Gu
+Created time: 17/06/2024
+
+Important Folder Description:
+
+1. genetic_data = imputated genotype data -> filtered imputated SNP data.
+2. imaging_data = MRI microstructure and macrostructure data -> filtered MRI data with selected individuals

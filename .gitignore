@@ -1,0 +1,15 @@
+.Rproj.user
+.Rhistory
+.Rdata
+.httr-oauth
+.DS_Store
+.quarto
+
+# project-wide ignore
+genetic_data/
+imaging_data/
+result_table/
+script/
+__MACOSX/
+pgs_img_2.Rproj
+.RData
