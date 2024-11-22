@@ -1,0 +1,15 @@
+# library
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+# For code reproducibility: and git
+library(here) # project-based relative path finding 
+library(usethis) # git set-up
+
+# For data manipulation
+library(tidyverse)
+library(data.table, include.only = "fread")
+
+# For specific parts of the code
+library(Hmisc, include.only = "hist.data.frame") # For quick visualisation of distribution
+library(qqman) # For Manhattan plot
+```
