@@ -20,7 +20,121 @@ library(qqman) # For Manhattan plot
 ```
 
 # Image Data preprocessing
+## white matter tract: FINALISED
+```{r White matter tract phenotype data standardisation and outlier removal, eval=FALSE, include=FALSE}
+# STEP1: Find file paths and names
+tract_path = list.files("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/raw data/tracts", full.names = TRUE)
+tract_name = gsub("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/raw data/tracts/|dti_|NODDI_|.csv", "", tract_path) # remove anything fit the patterns
+tract_name = paste0("tract_", tract_name) # add distinction for names
+outlier_stat <- data.frame(tract = character(), region = character(), outlier_Count = integer(), outlier_Rows = character())
 
+# STEP 2: Remove outliers with values beyond 5 standard deviation (SD) 5 and median absolute deviation (MAD)
+for (i in seq_along(tract_path)) {
+  # Read and process tract data
+  tmp_tract <- read.csv(tract_path[i])
+  tmp_tract_name <- tract_name[i]
+  
+  # format for GWAS
+  tmp_tract$Subject = as.numeric(gsub("UKB", "", tmp_tract$Subject))
+  tmp_tract = tmp_tract %>% rename(FID = Subject) %>% mutate(IID = FID) %>% relocate(FID, IID) # rename Subject to FID -> duplicate FID as IID -> move to correct order.
+  
+  # Z-score standardisation on numerical columns
+  tmp_tract[, 3:ncol(tmp_tract)] <- scale(tmp_tract[, 3:ncol(tmp_tract)])
+  
+  # Remove z-score outliers (beyond ±5 SD)
+  tmp_tract <- tmp_tract %>% mutate(across(3:ncol(.), ~ ifelse(. > 5 | . < -5, NA, .)))
+  
+  # save standardised tract table
+  assign(tmp_tract_name, tmp_tract)
+  
+  # Process Median Absolute Deviation (MAD) outliers
+  for (j in 3:ncol(tmp_tract)) {
+    # find MAD
+    col_name <- colnames(tmp_tract)[j]
+    col_mad <- mad(tmp_tract[[col_name]], na.rm = TRUE)
+    
+    # Find MAD outlier number and location
+    mad_outlier <- abs(tmp_tract[[col_name]]) > col_mad * 5
+    col_mad_outlier_n <- sum(mad_outlier, na.rm = TRUE)
+    outlier_rows <- which(mad_outlier)
+    
+    if (col_mad_outlier_n > 0) {
+      print(sprintf(
+        "In %s: %d MAD outliers detected in %s", 
+        tmp_tract_name, 
+        col_mad_outlier_n, 
+        col_name
+      ))
+      # remove MAD outliers
+      tmp_tract[[col_name]][mad_outlier] <- NA
+      
+      # Append to the outlier_stat for later visualisation
+      outlier_stat <- rbind(
+        outlier_stat,
+        data.frame(
+          tract = tmp_tract_name,
+          region = col_name,
+          outlier_Count = col_mad_outlier_n,
+          outlier_Rows = paste(outlier_rows, collapse = ",")
+        )
+      )
+    } else {
+      print(sprintf(
+        "In %s: No MAD outliers in %s", 
+        tmp_tract_name, 
+        col_name
+      ))
+      # Append to the outlier_stat for later visualisation
+      outlier_stat <- rbind(
+        outlier_stat,
+        data.frame(
+          tract = tmp_tract_name,
+          region = col_name,
+          outlier_Count = col_mad_outlier_n,
+          outlier_Rows = paste(outlier_rows, collapse = ",")
+        )
+      )
+    }
+  }
+  
+  # Assign processed tract data
+  tract_name_mad <- paste0(tract_name[i], ".mad")
+  assign(tract_name_mad, tmp_tract)
+}
+
+
+
+# STEP4: Generate results
+write.table(outlier_stat, file = paste0(here("result_supplement/mad_hist_stat/"), "white_matter_tract.mad_outliers.txt"), row.names = FALSE, col.names = TRUE, quote = FALSE) # white matter tract outlier stat
+
+for (i in seq_along(tract_name)){
+  # set results path
+  sd.result_path = paste0(here("result_supplement/imaging_data_final/"), tract_name[i], ".sd.QCed.txt")
+  sd.mad.result_path = paste0(here("result_supplement/imaging_data_final/"), tract_name[i], ".sd.mad.QCed.txt")
+  sd.hist_path = paste0(here("result_supplement/mad_hist_stat/"), tract_name[i], ".sd.pdf")
+  sd.mad.hist_path = paste0(here("result_supplement/mad_hist_stat/"), tract_name[i], ".sd.mad.pdf")
+  
+  # get and write respective table
+  sd.result = get(tract_name[i])
+  sd.mad.result = get(paste0(tract_name[i], ".mad"))
+  
+  write.table(sd.result, file = sd.result_path, row.names = FALSE, col.names = TRUE, quote = FALSE)
+  write.table(sd.mad.result, file = sd.mad.result_path, row.names = FALSE, col.names = TRUE, quote = FALSE)
+  
+  # generate respective histogram
+  pdf(file = sd.hist_path)
+    hist(sd.result)
+  dev.off()
+  
+  pdf(file = sd.mad.hist_path)
+    hist(sd.mad.result)
+  dev.off()
+}
+
+```
+
+
+# TOBEFINALISED
 ## global MRI phenotypes
 ## regional MRI phenotypes
 
@@ -356,119 +470,6 @@ write.csv(keep.id.QCed, file = here("genetic_data/keep.id.UKB.QCed.txt"), row.na
 # 14527	22005-0.0	487980	Continuous	Missingness
 
 # Use PCA corrected heterozygosity instead please
-```
-
-## white matter tract: FINALISED
-```{r White matter tract phenotype data standardisation and outlier removal, eval=FALSE, include=FALSE}
-# STEP1: Find file paths and names
-tract_path = list.files("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/raw data/tracts", full.names = TRUE)
-tract_name = gsub("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/raw data/tracts/|dti_|NODDI_|.csv", "", tract_path) # remove anything fit the patterns
-tract_name = paste0("tract_", tract_name) # add distinction for names
-outlier_stat <- data.frame(tract = character(), region = character(), outlier_Count = integer(), outlier_Rows = character())
-
-# STEP 2: Remove outliers with values beyond 5 standard deviation (SD) 5 and median absolute deviation (MAD)
-for (i in seq_along(tract_path)) {
-  # Read and process tract data
-  tmp_tract <- read.csv(tract_path[i])
-  tmp_tract_name <- tract_name[i]
-  
-  # format for GWAS
-  tmp_tract$Subject = as.numeric(gsub("UKB", "", tmp_tract$Subject))
-  tmp_tract = tmp_tract %>% rename(FID = Subject) %>% mutate(IID = FID) %>% relocate(FID, IID) # rename Subject to FID -> duplicate FID as IID -> move to correct order.
-  
-  # Z-score standardisation on numerical columns
-  tmp_tract[, 3:ncol(tmp_tract)] <- scale(tmp_tract[, 3:ncol(tmp_tract)])
-  
-  # Remove z-score outliers (beyond ±5 SD)
-  tmp_tract <- tmp_tract %>% mutate(across(3:ncol(.), ~ ifelse(. > 5 | . < -5, NA, .)))
-  
-  # save standardised tract table
-  assign(tmp_tract_name, tmp_tract)
-  
-  # Process Median Absolute Deviation (MAD) outliers
-  for (j in 3:ncol(tmp_tract)) {
-    # find MAD
-    col_name <- colnames(tmp_tract)[j]
-    col_mad <- mad(tmp_tract[[col_name]], na.rm = TRUE)
-    
-    # Find MAD outlier number and location
-    mad_outlier <- abs(tmp_tract[[col_name]]) > col_mad * 5
-    col_mad_outlier_n <- sum(mad_outlier, na.rm = TRUE)
-    outlier_rows <- which(mad_outlier)
-    
-    if (col_mad_outlier_n > 0) {
-      print(sprintf(
-        "In %s: %d MAD outliers detected in %s", 
-        tmp_tract_name, 
-        col_mad_outlier_n, 
-        col_name
-      ))
-      # remove MAD outliers
-      tmp_tract[[col_name]][mad_outlier] <- NA
-      
-      # Append to the outlier_stat for later visualisation
-      outlier_stat <- rbind(
-        outlier_stat,
-        data.frame(
-          tract = tmp_tract_name,
-          region = col_name,
-          outlier_Count = col_mad_outlier_n,
-          outlier_Rows = paste(outlier_rows, collapse = ",")
-        )
-      )
-    } else {
-      print(sprintf(
-        "In %s: No MAD outliers in %s", 
-        tmp_tract_name, 
-        col_name
-      ))
-      # Append to the outlier_stat for later visualisation
-      outlier_stat <- rbind(
-        outlier_stat,
-        data.frame(
-          tract = tmp_tract_name,
-          region = col_name,
-          outlier_Count = col_mad_outlier_n,
-          outlier_Rows = paste(outlier_rows, collapse = ",")
-        )
-      )
-    }
-  }
-  
-  # Assign processed tract data
-  tract_name_mad <- paste0(tract_name[i], ".mad")
-  assign(tract_name_mad, tmp_tract)
-}
-
-
-
-# STEP4: Generate results
-write.table(outlier_stat, file = paste0(here("result_supplement/mad_hist_stat/"), "white_matter_tract.mad_outliers.txt"), row.names = FALSE, col.names = TRUE, quote = FALSE) # white matter tract outlier stat
-
-for (i in seq_along(tract_name)){
-  # set results path
-  sd.result_path = paste0(here("result_supplement/imaging_data_final/"), tract_name[i], ".sd.QCed.txt")
-  sd.mad.result_path = paste0(here("result_supplement/imaging_data_final/"), tract_name[i], ".sd.mad.QCed.txt")
-  sd.hist_path = paste0(here("result_supplement/mad_hist_stat/"), tract_name[i], ".sd.pdf")
-  sd.mad.hist_path = paste0(here("result_supplement/mad_hist_stat/"), tract_name[i], ".sd.mad.pdf")
-  
-  # get and write respective table
-  sd.result = get(tract_name[i])
-  sd.mad.result = get(paste0(tract_name[i], ".mad"))
-  
-  write.table(sd.result, file = sd.result_path, row.names = FALSE, col.names = TRUE, quote = FALSE)
-  write.table(sd.mad.result, file = sd.mad.result_path, row.names = FALSE, col.names = TRUE, quote = FALSE)
-  
-  # generate respective histogram
-  pdf(file = sd.hist_path)
-    hist(sd.result)
-  dev.off()
-  
-  pdf(file = sd.mad.hist_path)
-    hist(sd.mad.result)
-  dev.off()
-}
-
 ```
 
 ## subcortical volume
