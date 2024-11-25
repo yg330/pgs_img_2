@@ -133,11 +133,12 @@ for (i in seq_along(tract_name)){
 
 ```
 
-## subcortical volume
-```{r Select subcortical regions from Amir's dataset, eval=FALSE, include=FALSE}
-# These data have already gone through z-score standardisation and mean+-5SD outlier removal.
+## subcortical volume: FINALISED
+```{r Subcortical volume phenotype data standardisation and outlier removal, eval=FALSE, include=FALSE}
+# STEP1: Select subcortical regions from Amir's dataset
+
+# These data have already gone through standardisation and mean+-5SD outlier removal.
 # For details of how the data is generated and cleaned, please check Amir's Jupyter notebook file named "Cleaning.ipynb" in the imaging data folder.
-# !! Subcortical phenotype data right now only includes volume !!
 
 raw_data_sub = read.csv(here("imaging_data/All_IDP_subcortical_Amir.csv"))
 
@@ -145,59 +146,85 @@ raw_data_sub_selected = raw_data_sub %>% select("IID", "Lateral.Ventricle", "Inf
 raw_data_sub_selected$FID = raw_data_sub_selected$IID
 
 write.table(raw_data_sub_selected, file = here("imaging_data/All_IDP_Amir_subcortical.only.txt"), row.names = F, col.names = T, quote = F)
-```
 
-
-```{r Subcortical phenotype data standardisation and outlier removal}
 # format to GWAS-ready format
 subcor = fread(here("imaging_data/All_IDP_Amir_subcortical.only.txt"))
 subcor.formatted = subcor %>% relocate("FID", "IID")
 write.table(subcor.formatted, file = here("imaging_data/subcortical_formatted.txt"), row.names = F, col.names = T, quote = F)
 
-# median-outlier removal
-subcor.formatted.mad = fread(here("imaging_data/subcortical_formatted.txt"))
-list.no_outlier = list() # List to find all phenotype with no outliers
 
+# Process Median Absolute Deviation (MAD) outliers
+subcor.formatted = fread(here("imaging_data/subcortical_formatted.txt"))
+subcor.formatted.mad = subcor.formatted
+outlier_stat <- data.frame(subcor_region = character(), outlier_Count = integer(), outlier_Rows = character())
 
-for (i in 3:ncol(subcor.formatted.mad)) { # FID and IID are the first two columns
-  col_name = colnames(subcor.formatted.mad)[i]
-  col_mad = mad(subcor.formatted.mad[[col_name]], na.rm = TRUE)
-  col_mad_outlier_n = sum(abs(subcor.formatted.mad[[col_name]]) > col_mad * 5, na.rm = TRUE)
-  
-  if (col_mad_outlier_n != 0) {
-    outlier_row_n = which(abs(subcor.formatted.mad[[col_name]]) > col_mad * 5)
-    subcor.formatted.mad[[col_name]][abs(subcor.formatted.mad[[col_name]]) > 5 * col_mad] <- NA # In column col_name, if |value| > 5*column mad SD, then |value| is outlier
-    print(paste0("The detected outlier number is ", col_mad_outlier_n, 
-                 ". At column ", col_name, 
-                 ", now removing the following rows ", 
-                 paste(outlier_row_n, collapse = ", ")))
-  } else {
-    print(paste0("No outlier detected at ", col_name, ". Moving on..."))
-    list.no_outlier = append(list.no_outlier, col_name)
+  for (j in 3:ncol(subcor.formatted.mad)) {
+    # find MAD
+    col_name <- colnames(subcor.formatted.mad)[j]
+    col_mad <- mad(subcor.formatted.mad[[col_name]], na.rm = TRUE)
+    
+    # Find MAD outlier number and location
+    mad_outlier <- abs(subcor.formatted.mad[[col_name]]) > col_mad * 5
+    col_mad_outlier_n <- sum(mad_outlier, na.rm = TRUE)
+    outlier_rows <- which(mad_outlier)
+    
+    if (col_mad_outlier_n > 0) {
+      print(sprintf(
+        "%d MAD outliers detected in %s",
+        col_mad_outlier_n, 
+        col_name
+      ))
+      # remove MAD outliers
+      subcor.formatted.mad[[col_name]][mad_outlier] <- NA
+      
+      # Append to the outlier_stat for later visualisation
+      outlier_stat <- rbind(
+        outlier_stat,
+        data.frame(
+          subcor_region = col_name,
+          outlier_Count = col_mad_outlier_n,
+          outlier_Rows = paste(outlier_rows, collapse = ",")
+        )
+      )
+    } else {
+      print(sprintf(
+        "No MAD outliers in %s", 
+        col_name
+      ))
+      # Append to the outlier_stat for later visualisation
+      outlier_stat <- rbind(
+        outlier_stat,
+        data.frame(
+          subcor_region = col_name,
+          outlier_Count = col_mad_outlier_n,
+          outlier_Rows = paste(outlier_rows, collapse = ",")
+        )
+      )
+    }
   }
-}
-
-# phenotype > 50 mad outliers:  Lateral.Ventricle(230); Inf.Lat.Vent(610); vessel(642); X4th.Ventricle(57); WM.hypointensities(3010); CC_Central(229); CC_Mid_Anterior(108)
 
 
-print(paste0("Phenotypes that had no outliers are ", paste(list.no_outlier, collapse = ", "))) # report no outlier phenotypes
-write.table(subcor.formatted.mad, file = here("imaging_data/subcortical_formatted.mad.txt"), row.names = F, col.names = T, quote = F)
+# STEP4: Generate results
+write.table(outlier_stat, file = paste0(here("result_supplement/mad_hist_stat/"), "subcor_volume.mad_outliers.txt"), row.names = FALSE, col.names = TRUE, quote = FALSE) # white matter tract outlier stat
 
 
-# Generate histogram in pdf for double-checking
-subcor.formatted = fread(here("imaging_data/subcortical_formatted.txt")) # non-median outlier corrected table
-
-subcor_plot_path = paste0("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/GWAS_Trait/hist_plots/subcor.pdf")
-subcor_plot.mad_path = paste0("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/GWAS_Trait/hist_plots/subcor.mad.pdf")
-
-for (i in 1) { # unclear but when put into a loop the margin problem was fixed.
-  pdf(file = subcor_plot_path)
-    title = "subcor"
+# set results path
+  sd.result_path = paste0(here("result_supplement/imaging_data_final/subcor_vol.sd.QCed.txt"))
+  sd.mad.result_path = paste0(here("result_supplement/imaging_data_final/subcor_vol.sd.mad.QCed.txt"))
+  sd.hist_path = paste0(here("result_supplement/mad_hist_stat/subcor_vol.sd.pdf"))
+  sd.mad.hist_path = paste0(here("result_supplement/mad_hist_stat/subcor_vol.sd.mad.pdf"))
+  
+# get and write respective table
+  write.table(subcor.formatted, file = sd.result_path, row.names = FALSE, col.names = TRUE, quote = FALSE)
+  write.table(subcor.formatted.mad, file = sd.mad.result_path, row.names = FALSE, col.names = TRUE, quote = FALSE)
+  
+# generate respective histogram
+for (i in 1){
+  pdf(file = sd.hist_path)
     hist(subcor.formatted)
   dev.off()
   
-    pdf(file = subcor_plot.mad_path)
-    title = "subcor.mad"
+  pdf(file = sd.mad.hist_path)
     hist(subcor.formatted.mad)
   dev.off()
 }
@@ -205,9 +232,7 @@ for (i in 1) { # unclear but when put into a loop the margin problem was fixed.
 ```
 
 
-# TOBEFINALISED
-## global MRI phenotypes
-## regional MRI phenotypes
+## Regional MRI phenotypes
 
 ```{r Regional Phenotype Data read-in}
 # Regional MRI phenotype data
@@ -543,3 +568,6 @@ write.csv(keep.id.QCed, file = here("genetic_data/keep.id.UKB.QCed.txt"), row.na
 # Use PCA corrected heterozygosity instead please
 ```
 
+
+# TOBEFINALISED
+## global MRI phenotypes
