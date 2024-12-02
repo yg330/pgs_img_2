@@ -586,8 +586,9 @@ for (i in 1){
   dev.off()
 }
 ```
-# To be finalised: # Genetic Data preprocessing
-```{r Find unique participant ID list}
+# Genetic Data preprocessing
+## keep id and extract SNP list for PLINK
+```{r Quality Control for Participant ID, eval=FALSE, include=FALSE}
 # Find unique id number for participants with any MRI phenotype data
 MRI.id.list = list(CT$Subject, FA$Subject, FI$Subject, GC$Subject, GMV$Subject, IC$Subject, ICVF$Subject, ISOVF$Subject, MC$Subject, MD$Subject, OD$Subject, SA$Subject)
 keep.id = flatten(MRI.id.list)
@@ -600,9 +601,6 @@ write.csv(keep.id, file = here("genetic_data/keep.id.UKB.txt"))
 # Alternatively: If you want to find shared common ID that have data across all MRI phenotype
 # keep.id = Reduce(intersect, list(CT$Subject, FA$Subject, FI$Subject, GC$Subject, GMV$Subject, IC$Subject, ICVF$Subject, ISOVF$Subject, MC$Subject, MD$Subject, OD$Subject, SA$Subject))
 
-```
-
-```{r Quality Control for Participant ID, eval=FALSE, include=FALSE}
 # Participants QC
   # Select Self-identified white Europeans {keep 21000-0.0 %in% 1, 1001, 1002, 1003}
   # Remove Excessive heterozygosity {keep 22027-0.0 == NA}
@@ -651,4 +649,179 @@ write.csv(keep.id.QCed, file = here("genetic_data/keep.id.UKB.QCed.txt"), row.na
 # 14527	22005-0.0	487980	Continuous	Missingness
 
 # Use PCA corrected heterozygosity instead please
+```
+```{r Create Data required for GWAS: Extract SNP list, eval=FALSE, include=FALSE}
+# QC step:
+# Filter for MAF > 0.001
+# Imputation Quality R2 > 0.4
+# No need for filter for hwe (Hardy-Weinberg Equilibrium) > 0.000001 as it has already been done during imputation step by UKB
+
+# SNP genotype data
+file.loc = list.files(here("genetic_data"), pattern="v3.txt", full.names=TRUE) # grab all chromosome file locations
+file.name = gsub(here("genetic_data/ukb_mfi_|_v3.txt"), "", file.loc) # remove anything fit the patterns
+
+for (i in 1:15) { # Create a list of SNPs that have v6 {MAF > 0.001} and imputation v8 {r2 > 0.4} -> on 2 core, R will die after 15 chromosomes
+  tmp_file = fread(file.loc[i])
+  tmp_file = filter(tmp_file, tmp_file$V6>0.001 & tmp_file$V8 > 0.4)
+  tmp_name = paste0("genetic_data/ukb_", file.name[i],".QCed.txt")
+  write.csv(tmp_file, file = here(tmp_name))
+}
+
+for (i in 15:length(file.loc)) { # Create a list of SNPs that have v6 {MAF > 0.001} and imputation v8 {r2 > 0.4}
+  tmp_file = fread(file.loc[i])
+  tmp_file = filter(tmp_file, tmp_file$V6>0.001 & tmp_file$V8 > 0.4)
+  tmp_name = paste0("genetic_data/ukb_", file.name[i],".QCed.txt")
+  write.csv(tmp_file, file = here(tmp_name))
+}
+
+# merge all to create SNP list
+SNP.loc = list.files(here("genetic_data"), pattern="ukb_chr", full.names=TRUE) # grab all chromosome file locations
+keep.SNP = data.frame(SNP_loc = character(0), rs_id = character(0))
+  
+for (i in 1:length(SNP.loc)) {
+  tmp_file = select(fread(SNP.loc[i], drop=1), c("V1", "V2"))
+  tmp_file = rename(tmp_file, "SNP_loc" = "V1", "rs_id" = "V2")
+  keep.SNP = full_join(keep.SNP, tmp_file)
+}
+
+
+```
+```{r Create keep and extract files for generating bfiles for running GCTA and making GRM, eval=FALSE, include=FALSE}
+# correctly formatted id file to --keep
+keep.id.QCed = fread(here("genetic_data/keep.id.UKB.QCed.txt"))
+keep.id.QCed.formatted = keep.id.QCed %>% select(eid) %>% mutate(FID = eid, IID = eid) %>% select(FID, IID) # remove gsex; create FID and IID; remove eid so everything is in GCTA format
+write.table(keep.id.QCed.formatted, file = here("genetic_data/keep.id.UKB.QCed.formatted.txt"), row.names = FALSE, col.names = FALSE)
+
+# correctly formatted SNP file to --extract
+chr.SNP.list = list.files(here("genetic_data"), pattern = "ukb_chr", full.names = TRUE)
+chr.SNP.list = grep(chr.SNP.list, pattern = "formatted", invert = TRUE, value = TRUE)
+
+for (i in 1:length(chr.SNP.list)){ # loop for generating and selecting only SNP lists
+  tmp_file = fread(chr.SNP.list[i])
+  tmp_file = select(tmp_file, "V2")
+  tmp_name = gsub(".txt", "", chr.SNP.list[i])
+  tmp_name.loc = paste0(tmp_name, ".formatted.txt")
+  write.table(tmp_file, file = tmp_name.loc, row.names = FALSE, col.names = FALSE, quote = FALSE)
+}
+
+# generate mbgen for GCTA to read bgen files
+bgen.loc = list.files("/rds/user/yg330/rds-rb643-ukbiobank2/Data_Genetics/Genetic_data/Imputed", pattern = "_v3.bgen", full.names = TRUE)
+bgen.loc.autosome = grep(bgen.loc, pattern = "X", invert = TRUE, value = TRUE) %>% str_sort(numeric = TRUE) # remove x chromosome and sort so gcta is reading it in chromosome numbers
+
+write.table(bgen.loc.autosome, file = here("genetic_data/bgen.loc.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+# sample file and bgen file for GRM:
+
+  # All sample file for chr1 to chr 22 is same, thus only copied ***_chr1_v3_***.sample data to working directory under the name ukb20904_imp_v3_s487334.sample.
+  # In GCTA: Sex coding: "1" or "M" for male and "2" or "F" for female.
+  # Checked in UKB coding: "1" for male and "2" for female = no need to update :)
+  # Everything in .sample looks all correct!
+
+# bgen is too troublesome - make beds
+
+# Check Script for GRM generation log:
+# Timeline: PLINK_Make_Bed.sh >>> GCTA_GRM_***.sh >>> Make_Sparse0.05GRM_***.sh
+# Purpose:  pgen to bfiles    >>> GRM per chr*    >>> sparse GRM all autosome
+
+# TODO: Sex chromosome (X) analysis
+```
+## COVAR files
+```{r Generate formatted files for GWAS, eval=FALSE, include=FALSE}
+# Read in Tables with extra info
+UKB.ID.QCed = fread(here("genetic_data/keep.id.UKB.QCed.txt"), header = TRUE)
+UKB.ID.QCed$eid = as.character(UKB.ID.QCed$eid)
+UKB.covar = fread(here("imaging_data/UKBv3.csv"), select = c("participant", "session", "run", "study", "SurfaceHoles", "sex", "site", "dx", "age_days")) # contains Eular, MRI site, and diagnosis data. # This table contains other data such as total brain volume and total grey matter volume.
+UKB.covar = UKB.covar %>% filter(UKB.covar$session == "ses-01") # only select session 1, as we are not interested in longitudinal study yet with only 1504 people in it.
+UKB.motion.covar = fread(here("imaging_data/UKB_Motion.csv")) # contains fd and fd_max data
+
+# format so every table can be merged with the same eid column.
+UKB.motion.covar$eid = gsub("UKB", "", UKB.motion.covar$eid) # remove "UKB" to fit eid format with every other table
+UKB.covar$eid = gsub("UKB", "", UKB.covar$participant)
+UKB.covar.all = left_join(UKB.ID.QCed, UKB.covar, by = "eid") # merge by QCed ID list from UKB.ID.QCed
+UKB.covar.all = left_join(UKB.covar.all, UKB.motion.covar, by = "eid")
+UKB.covar.all$eid = as.numeric(UKB.covar.all$eid)
+UKB.covar.all$FID = UKB.covar.all$eid # Set FID and IID so it's in the fastGWA format
+UKB.covar.all$IID = UKB.covar.all$eid # Set FID and IID so it's in the fastGWA format
+
+# Investigate NA population (These will be automatically ignored by GCTA-fastGWA, thus will be excluded from reported population)
+sum(is.na(UKB.covar.all$fd)) # 2637 people
+sum(is.na(UKB.covar.all$fd_max)) # 2637 people
+sum(is.na(UKB.covar.all$SurfaceHoles)) # 20 people
+
+
+```
+```{r Create Disecrete COVAR}
+# Create Discrete COVAR Table
+  # Sex
+  # MRI Scanning Site
+  # T1T2 availability status (Structural MRI Only)
+
+# Code MRI Site to numbers
+table(UKB.covar.all$site) # 4 MRI scanning site: Bristol:1  Cheadle:2   Newcastle:3   Reading:4
+UKB.covar.all = UKB.covar.all %>% mutate(site_id = recode(site, "Bristol" = 1, "Cheadle" = 2, "Newcastle" = 3, "Reading" = 4))
+
+# Generate T1T2 availability status
+UKB_MRI.pop = list.files(path = "/rds/project/rb643/rds-rb643-ukbiobank2/Data_Imaging", pattern = "UKB") # Gather all UKB MRI participant ID existed in the Data_Imaging folder
+UKB_MRI.pop.dir = list.files(path = "/rds/project/rb643/rds-rb643-ukbiobank2/Data_Imaging", pattern = "UKB", full.names = TRUE) # Gather all UKB MRI participant ID full directory existed in the Data_Imaging folder
+UKB_MRI.pop.T2_dir = paste0(UKB_MRI.pop.dir, "/anat/T2_FLAIR") # Theoretical directory if T2_FLAIR exist
+UKB.T1T2 = data.frame(IID = character(), T1T2 = integer())
+
+for (i in 1:length(UKB_MRI.pop)){
+  UKB.T1T2[i,1] = UKB_MRI.pop[i]
+  UKB.T1T2[i,2] = ifelse(dir.exists(UKB_MRI.pop.T2_dir[i]), 1, 0) # if T2_FLAIR folder exist = 1, if not = 0
+}
+
+write.table(UKB.T1T2, file =here("result_table/UKB.T1T2.txt"), row.names = F, col.names = T, quote = F) # write in correct format
+
+# Create discrete COVAR
+T1T2 = fread(here("result_table/UKB.T1T2.txt"))
+T1T2$IID = gsub("UKB", "", T1T2$IID) # remove "UKB" to fit eid format with every other table
+T1T2$FID = T1T2$IID # duplicate FID from IID to keep format for GCTA
+T1T2 = T1T2 %>% mutate_if(is.character,as.numeric) # make sure everything is in number so GCTA can read it
+
+discrete.COVAR = UKB.covar.all %>% select("FID", "IID", "gSEX", "site_id") # FID; IID; genetic sex; site_id
+discrete.COVAR = left_join(discrete.COVAR, T1T2, by = c("FID", "IID")) # merge to get T1T2
+discrete.COVAR = discrete.COVAR %>% mutate_if(is.character,as.numeric) # make sure everything is in number so GCTA can read it
+write.table(discrete.COVAR, file = here("result_table/structural.discrete.COVAR.formatted.txt"), row.names = F, quote = F)
+
+# remove T1T2 for diffusional phenotype:
+diffusion.discrete.COVAR = discrete.COVAR[,-"T1T2"]
+write.table(diffusion.discrete.COVAR, file =here("result_table/diffusion.discrete.COVAR.formatted.txt"), row.names = F, quote = F) # write in correct format
+
+```
+```{r Create Continous COVAR}
+# Create Continuous COVAR Table
+  # "Age" - from Richard's dataset "age_days", it's age at scanning" - scaled()
+  # "Agesquared" - scaled(Age (days))^2 
+  # "Age_Sex" and "Age_Sex^2" - scaled(sex[0/1]) * "Age and scaled(sex[0/1]) * agesquared
+  # "genetic PCA": "22009-0.1","22009-0.2","22009-0.3","22009-0.4","22009-0.5","22009-0.6","22009-0.7","22009-0.8","22009-0.9","22009-0.10",
+  #                "22009-0.11","22009-0.12","22009-0.13","22009-0.14","22009-0.15","22009-0.16","22009-0.17","22009-0.18","22009-0.19","22009-0.20"
+  #                "X22009-0.21", "X22009-0.22", "X22009-0.23","X22009-0.24", "X22009-0.25", "X22009-0.26", "X22009-0.27", "X22009-0.28", "X22009-0.29","X22009-0.30",
+  #                "X22009-0.31", "X22009-0.32", "X22009-0.33", "X22009-0.34", "X22009-0.35","X22009-0.36", "X22009-0.37", "X22009-0.38", "X22009-0.39", "X22009-0.40"
+  # "Euler" = SurfaceHoles
+  # "fd" and "fd_max": framepair displacement
+  # genotype batch: "22000-0.0" - Added as continuous even though it is discrete COVAR as GCTA reported that there is too many levels to compute (>100!) and suggested moving it to qCOVAR
+
+field_cont.covar = c("eid", "22000-0.0", "22009-0.1","22009-0.2","22009-0.3","22009-0.4","22009-0.5","22009-0.6","22009-0.7","22009-0.8","22009-0.9","22009-0.10", "22009-0.11","22009-0.12","22009-0.13","22009-0.14","22009-0.15","22009-0.16",
+                     "22009-0.17","22009-0.18","22009-0.19","22009-0.20", "22009-0.21", "22009-0.22", "22009-0.23","22009-0.24", "22009-0.25", "22009-0.26", "22009-0.27", "22009-0.28", "22009-0.29","22009-0.30", "22009-0.31", "22009-0.32", 
+                     "22009-0.33", "22009-0.34", "22009-0.35","22009-0.36", "22009-0.37", "22009-0.38", "22009-0.39", "22009-0.40")
+continous.COVAR = fread("/rds/user/yg330/rds-rb643-ukbiobank2/Data_Phenotype/DataFetch_20022024/ukb677594.csv",select = field_cont.covar, header = T,sep=",")
+
+
+continous.COVAR = left_join(UKB.covar.all, continous.COVAR, by = "eid")
+continous.COVAR = continous.COVAR %>% select("FID", "IID", "age_days", all_of(field_cont.covar), "SurfaceHoles", "fd", "fd_max", "gSEX") %>% select(-eid) # FID; IID; age; gPCA (1-40); euler; fd; fd_max
+continous.COVAR = continous.COVAR %>% rename_with(~ gsub("22009-0.", "gPCA", .x, fixed = TRUE)) # rename all 22009-0. to gPCA for easier readability
+continous.COVAR = continous.COVAR %>% rename("euler" = "SurfaceHoles", "gbatch"  = "22000-0.0") # rename SurfaceHoles to Euler Index as Richard said it is Euler Index, similarly rename "22000-0.0" as gbatch
+write.csv(continous.COVAR, file = here("result_table/continous.COVAR.txt"), row.names = F, quote = F)
+
+# standardisation
+continous.COVAR.scaled = fread(here("result_table/continous.COVAR.txt"))
+continous.COVAR.scaled$age_days_sqred = continous.COVAR.scaled$age_days**2 # to generate age_squared
+continous.COVAR.scaled[,c(3,5:49)] <- lapply(continous.COVAR.scaled[,c(3,5:49)], scale)
+
+# generate age_sex and age_sex^2
+continous.COVAR.scaled$age_sex = continous.COVAR.scaled$age_days * continous.COVAR.scaled$gSEX
+continous.COVAR.scaled$age_sqred_sex = continous.COVAR.scaled$age_days_sqred * continous.COVAR.scaled$gSEX
+continous.COVAR.scaled = continous.COVAR.scaled %>% select(-gSEX) # remove gSEX as it's continous covar only.
+write.table(continous.COVAR.scaled, file =here("result_table/continous.COVAR.formatted.txt"), row.names = F, quote = F) # write in correct format
 ```

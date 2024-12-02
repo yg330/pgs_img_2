@@ -1,0 +1,41 @@
+# post-GWAS analysis
+```{r Manhattan plot for global MRI GWAS}
+GWAS_path = list.files("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/MRI_Global_GWAS/", pattern = ".fastGWA", full.names = TRUE)
+dic_path = list.files("/rds/user/yg330/rds-genetics_hpc-Nl99R8pHODQ/UKB/Imaging_genetics/yg330/MRI_Global_GWAS/", pattern = "number.to.pheno.key", full.names = TRUE)
+
+dic = fread(dic_path)
+dic$pattern = paste0(dic$GWAS, "_pheno", dic$num)
+
+for (i in 1){
+  # read-in GWAS
+  tmp_GWAS = fread(GWAS_path[i])
+  tmp_GWAS$BP = tmp_GWAS$POS # required column name BP = POS generated from fastGWA
+  
+  # report genetic inflation factor
+  qchisq(1-median(tmp_GWAS$P),1)/qchisq(0.5,1)
+  
+  # 
+}
+
+# length(GWAS_path)
+
+pdf(file=here("Global.GWAS_1.pdf"))
+par(mfrow = c(2, 1))
+
+# Plot the Manhattan plot
+manhattan(tmp_GWAS)
+
+nom = subset(tmp_GWAS, P < 0.001)
+
+manhattan(nom, chr = "CHR", bp = "POS", p = "P", snp = "SNP",
+          col = c("gray10", "gray60"), chrlabs = NULL,
+          suggestiveline = -log10(1e-06), genomewideline = -log10(5e-08),
+          highlight = NULL, logp = TRUE, annotatePval = NULL,
+          annotateTop = TRUE)
+
+
+# Plot the qq-plot
+qq(gwasResults$P)
+
+
+```
